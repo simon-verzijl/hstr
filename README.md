@@ -40,14 +40,6 @@ repository or executable, run:
 The uninstaller also previews the exact lines it will remove and asks for
 confirmation. Reload the shell afterward with `source ~/.zshrc`.
 
-Search terms are combined with AND semantics and matched case-insensitively.
-Prefix a term with `^` to match it only at the beginning of the command.
-Backspace only removes the last search character; Delete is used for deleting
-history entries.
-Press Right Arrow to insert the selected command into the prompt without
-running it; press Enter to execute it after editing.
-Esc exits without running anything. Ctrl-P/Ctrl-N also move through results.
-
 ## Use
 
 Press Ctrl-R in an interactive zsh shell, then type one or more search terms.
