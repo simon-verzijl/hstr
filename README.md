@@ -52,7 +52,6 @@ match it at the beginning of the command.
 - Page Up/Page Down: navigate by screen.
 - Home/End or Ctrl-A/Ctrl-E: jump to the first/last result.
 - Delete: select history entries for deletion; press Enter or `Y` to confirm.
-- Backspace: remove the last search character.
 - Escape or Ctrl-C: exit.
 
 The selected command is printed before execution, and multiline history
