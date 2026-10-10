@@ -1,7 +1,7 @@
 # hstr for macOS
 
 A small, dependency-free interactive shell-history searcher for zsh. Press
-Ctrl-E, type one or more words, move with the arrow keys, and press Enter to
+Ctrl-R, type one or more words, move with the arrow keys, and press Enter to
 put the selected command into the shell and execute it.
 
 ## Run manually
@@ -53,7 +53,7 @@ Remove the shell integration without deleting hstr files with:
 ```
 
 Restart zsh (or run `source ~/.zshrc`). The installer places `hstr` in
-`~/.local/bin` and adds the Ctrl-E widget to your zsh configuration.
+`~/.local/bin` and adds the Ctrl-R widget to your zsh configuration.
 
 Search terms are combined with AND semantics and matched case-insensitively.
 Prefix a term with `^` to match it only at the beginning of the command.

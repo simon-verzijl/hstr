@@ -34,4 +34,4 @@ case ":${PATH}:" in
     fi
     ;;
 esac
-printf 'Installed hstr to %s and configured Ctrl-E in %s.\n' "$install_dir" "$zshrc"
+printf 'Installed hstr to %s and configured Ctrl-R in %s.\n' "$install_dir" "$zshrc"
