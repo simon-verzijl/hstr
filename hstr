@@ -1,0 +1,560 @@
+#!/usr/bin/env python3
+"""Interactive shell-history searcher.
+
+The program deliberately uses only Python's standard library so it can be
+installed on a stock macOS system.  It reads a history file, presents an
+incremental AND search, and writes the selected command to stdout.
+"""
+
+from __future__ import annotations
+
+import argparse
+import curses
+from datetime import datetime
+import os
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+from typing import Iterable
+
+
+_ZSH_HEADER = re.compile(r"^: (\d+):\d+;(.*)$")
+_NUMBERED_LINE = re.compile(r"^\s*\d+\s+(.*)$")
+
+
+class HistoryCommand(str):
+    """A command string carrying its optional persistent-history timestamp."""
+
+    timestamp: str
+
+    def __new__(cls, value: str, timestamp: str = "") -> "HistoryCommand":
+        command = super().__new__(cls, value)
+        command.timestamp = timestamp
+        return command
+
+
+def parse_history(lines: Iterable[str]) -> list[str]:
+    """Parse zsh, bash, and `fc -rl` history into newest-first commands."""
+    commands: list[str] = []
+    current: str | None = None
+    current_timestamp = ""
+
+    # zsh can serialize embedded newlines as the two-character sequence \\n+    # n, including before the next extended-history timestamp.
+    history_text = "".join(lines)
+    # A marker before the next timestamp is an entry separator; elsewhere it
+    # represents a continued command line and must retain one backslash.
+    history_text = re.sub(r"\\+n(?=\s*:\s*\d+:\d+;)", "\n", history_text)
+    history_text = re.sub(r"\\+n", lambda _: "\\\n", history_text)
+
+    for raw in history_text.splitlines(keepends=True):
+        line = raw.rstrip("\n")
+        zsh_match = _ZSH_HEADER.match(line)
+        numbered_match = _NUMBERED_LINE.match(line)
+
+        if zsh_match:
+            if current:
+                commands.append(HistoryCommand(current, current_timestamp))
+            current_timestamp = datetime.fromtimestamp(int(zsh_match.group(1))).strftime("%Y-%m-%d %H:%M")
+            current = zsh_match.group(2)
+        elif numbered_match:
+            if current:
+                commands.append(HistoryCommand(current, current_timestamp))
+            current_timestamp = ""
+            current = numbered_match.group(1)
+        elif line.startswith("#") and current is None:
+            # Bash timestamp metadata.
+            continue
+        elif current is not None:
+            # Preserve multiline commands from zsh and history output.
+            current += "\n" + line
+        elif line.strip():
+            current = line
+
+    if current:
+        commands.append(HistoryCommand(current, current_timestamp))
+    # Files are oldest-first, while fc -rl output is already newest-first.
+    return commands
+
+
+def history_from_file(path: Path) -> list[str]:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as stream:
+            # Persistent shell history files are written oldest-first.
+            return list(reversed(parse_history(stream)))
+    except OSError:
+        return []
+
+
+def matching(commands: Iterable[str], query: str) -> list[str]:
+    terms = [term.casefold() for term in query.split()]
+    result: list[str] = []
+    seen: set[str] = set()
+    for command in commands:
+        normalized = HistoryCommand(command.strip(), getattr(command, "timestamp", ""))
+        if not normalized or normalized in seen:
+            continue
+        haystack = normalized.casefold()
+        if all(
+            (haystack.startswith(term[1:]) if term.startswith("^") else term in haystack)
+            for term in terms
+        ):
+            result.append(normalized)
+            seen.add(normalized)
+    return result
+
+
+def display_command(command: str) -> str:
+    """Make multiline entries readable without changing what gets executed."""
+    # zsh may retain one or more continuation backslashes before a newline.
+    display = re.sub(r"\\+\n", " ↵ ", command)
+    return display.replace("\n", " ↵ ")
+
+
+def command_for_execution(command: str) -> str:
+    """Turn zsh's history-escaped multiline form back into shell syntax."""
+    # A pasted multiline command can contain an escaped blank line between
+    # two logical commands. In history this appears as two slash-only lines.
+    slash = "\\"
+    # A standalone assignment followed by a command must be two shell
+    # commands. A pasted history entry can incorrectly encode that boundary
+    # with a continuation slash (PROJECT=foo\\<newline>gcloud ...).
+    command = re.sub(
+        r"(?m)^([ \t]*[A-Za-z_][A-Za-z0-9_]*=[^\\\n]*)\\+\n(?=\s*[A-Za-z_./])",
+        r"\1\n",
+        command,
+    )
+    command = re.sub(r"\\+\n\\+\n", "\n", command)
+    # Continuation lines need exactly one backslash before their newline.
+    command = re.sub(r"\\+\n", lambda _: slash + "\n", command)
+    return command
+
+
+def draw(screen: "curses._CursesWindow", query: str, commands: list[str], index: int, start: int, delete_targets: set[str] | None = None) -> None:
+    screen.erase()
+    height, width = screen.getmaxyx()
+    usable = max(1, height - 3)
+    start = max(0, min(start, max(0, len(commands) - usable)))
+
+    for row, command in enumerate(commands[start : start + usable]):
+        timestamp = getattr(command, "timestamp", "")
+        display = f"{timestamp}  {display_command(command)}" if timestamp else display_command(command)
+        if len(display) > width - 2:
+            display = display[: max(0, width - 5)] + "..."
+        if start + row == index:
+            attr = curses.color_pair(2) | curses.A_BOLD if curses.has_colors() else curses.A_REVERSE
+        elif delete_targets and command in delete_targets:
+            attr = curses.color_pair(4) | curses.A_BOLD if curses.has_colors() else curses.A_BOLD
+        else:
+            attr = curses.color_pair(1) if curses.has_colors() else curses.A_NORMAL
+        try:
+            screen.addnstr(row, 0, display, max(1, width - 1), attr)
+        except curses.error:
+            pass
+
+    if delete_targets is not None:
+        footer = f"Delete {len(delete_targets)} entr{'y' if len(delete_targets) == 1 else 'ies'}"
+        hint = "  ↑/↓ add  Enter/Y delete  Esc cancel"
+    else:
+        footer = f"Search: {query}"
+        hint = "  ↑/↓ select  Enter run  Esc quit"
+    try:
+        screen.addnstr(
+            height - 2,
+            0,
+            (footer + hint)[: max(1, width - 1)],
+            max(1, width - 1),
+            (curses.color_pair(3) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD,
+        )
+        screen.addnstr(
+            height - 1,
+            0,
+            f"{len(commands)} match(es)"[: max(1, width - 1)],
+            max(1, width - 1),
+            (curses.color_pair(1) | curses.A_DIM) if curses.has_colors() else curses.A_DIM,
+        )
+    except curses.error:
+        pass
+    screen.move(height - 2, min(len(footer), max(0, width - 1)))
+    screen.refresh()
+
+
+def choose(commands: list[str]) -> tuple[str | None, bool, bool]:
+    selected: list[str | None] = [None]
+    changed = [False]
+    insert_only = [False]
+
+    def run(screen: "curses._CursesWindow") -> None:
+        curses.curs_set(1)
+        screen.keypad(True)
+        screen.timeout(-1)
+        try:
+            curses.set_escdelay(25)
+        except AttributeError:
+            pass
+        if curses.has_colors():
+            curses.start_color()
+            try:
+                curses.use_default_colors()
+            except curses.error:
+                pass
+            curses.init_pair(1, curses.COLOR_WHITE, -1)
+            if curses.COLORS >= 256:
+                # A medium-light green background with white text for the active row.
+                curses.init_pair(2, curses.COLOR_WHITE, 77)
+            else:
+                curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_GREEN)
+            curses.init_pair(3, curses.COLOR_YELLOW, -1)
+            curses.init_pair(4, curses.COLOR_WHITE, curses.COLOR_RED)
+        query = ""
+        index = 0
+        view_start = 0
+        delete_targets: set[str] = set()
+        delete_mode = False
+        delete_direction: str | None = None
+        delete_start = 0
+        while True:
+            results = matching(commands, query)
+            if results:
+                index = min(index, len(results) - 1)
+            else:
+                index = 0
+            view_start = max(0, min(view_start, max(0, len(results) - max(1, screen.getmaxyx()[0] - 3))))
+            draw(screen, query, results, index, view_start, delete_targets if delete_mode else None)
+            try:
+                key = screen.get_wch()
+            except KeyboardInterrupt:
+                if delete_mode:
+                    commands[:] = [command for command in commands if command not in delete_targets]
+                    changed[0] = True
+                return
+            if delete_mode:
+                if key in ("Y", "\n", "\r", curses.KEY_ENTER, "\x03"):
+                    commands[:] = [command for command in commands if command not in delete_targets]
+                    changed[0] = True
+                    delete_targets.clear()
+                    delete_mode = False
+                    delete_direction = None
+                    index = min(index, max(0, len(matching(commands, query)) - 1))
+                    view_start = min(view_start, index)
+                elif key in ("N", "n", 27, "\x1b", "\x03"):
+                    delete_targets.clear()
+                    delete_mode = False
+                    delete_direction = None
+                elif key in (curses.KEY_UP, "\x10"):
+                    if delete_direction is None:
+                        delete_direction = "up"
+                        index = max(0, index - 1)
+                        if results:
+                            delete_targets.add(results[index])
+                        if index < view_start:
+                            view_start = index
+                    elif delete_direction == "up":
+                        if index > 0:
+                            index -= 1
+                            if results:
+                                delete_targets.add(results[index])
+                            if index < view_start:
+                                view_start = index
+                    elif index > delete_start:
+                        delete_targets.discard(results[index])
+                        index -= 1
+                    elif index == delete_start and index > 0:
+                        delete_direction = "up"
+                        index -= 1
+                        delete_targets.add(results[index])
+                elif key in (curses.KEY_DOWN, "\x0e"):
+                    if delete_direction is None:
+                        delete_direction = "down"
+                        index = min(max(0, len(results) - 1), index + 1)
+                        if results:
+                            delete_targets.add(results[index])
+                        usable = max(1, screen.getmaxyx()[0] - 3)
+                        if index >= view_start + usable:
+                            view_start = index - usable + 1
+                    elif delete_direction == "down":
+                        if index < len(results) - 1:
+                            index += 1
+                            if results:
+                                delete_targets.add(results[index])
+                            usable = max(1, screen.getmaxyx()[0] - 3)
+                            if index >= view_start + usable:
+                                view_start = index - usable + 1
+                    elif index < delete_start:
+                        delete_targets.discard(results[index])
+                        index += 1
+                    elif index == delete_start and index < len(results) - 1:
+                        delete_direction = "down"
+                        index += 1
+                        delete_targets.add(results[index])
+                continue
+            if key in ("\n", "\r", curses.KEY_ENTER):
+                if results:
+                    selected[0] = results[index]
+                return
+            if key == curses.KEY_RIGHT:
+                if results:
+                    selected[0] = results[index]
+                    insert_only[0] = True
+                return
+            if key in (27, "\x1b", "\x03") or key == getattr(curses, "KEY_EXIT", -999):
+                return
+            if key in (curses.KEY_HOME, "\x01"):
+                index = 0
+                view_start = 0
+            elif key in (curses.KEY_END, "\x05"):
+                index = max(0, len(results) - 1)
+                usable = max(1, screen.getmaxyx()[0] - 3)
+                view_start = max(0, len(results) - usable)
+            elif key in (curses.KEY_UP, "\x10"):
+                index = max(0, index - 1)
+                # Let the selection reach the top edge first. The next Up
+                # press scrolls the result list further upward.
+                if index < view_start:
+                    view_start = index
+            elif key in (curses.KEY_DOWN, "\x0e"):
+                index = min(max(0, len(results) - 1), index + 1)
+                usable = max(1, screen.getmaxyx()[0] - 3)
+                if index >= view_start + usable:
+                    view_start = index - usable + 1
+            elif key == curses.KEY_PPAGE:
+                usable = max(1, screen.getmaxyx()[0] - 3)
+                first_visible = view_start
+                if index > first_visible:
+                    index = first_visible
+                else:
+                    index = max(0, index - usable)
+                    view_start = index
+            elif key == curses.KEY_NPAGE:
+                usable = max(1, screen.getmaxyx()[0] - 3)
+                last_visible = min(max(0, len(results) - 1), view_start + usable - 1)
+                if index < last_visible:
+                    index = last_visible
+                else:
+                    index = min(max(0, len(results) - 1), index + usable)
+                    view_start = min(max(0, len(results) - usable), index - usable + 1)
+            elif key == curses.KEY_DC:
+                if results:
+                    delete_mode = True
+                    delete_direction = None
+                    delete_start = index
+                    delete_targets = {results[index]}
+            elif key in (curses.KEY_BACKSPACE, 8, 127, "\b", "\x08", "\x7f"):
+                query = query[:-1]
+                index = 0
+                view_start = 0
+            elif isinstance(key, str) and key.isprintable():
+                query += key
+                index = 0
+                view_start = 0
+
+    # Shell helpers capture stdout to receive the selected command. Keep the
+    # interactive curses screen on the terminal instead of in that pipe.
+    saved_stdout = os.dup(1)
+    try:
+        with open("/dev/tty", "w", encoding="utf-8", errors="replace") as terminal:
+            os.dup2(terminal.fileno(), 1)
+            try:
+                curses.wrapper(run)
+            except KeyboardInterrupt:
+                pass
+    finally:
+        os.dup2(saved_stdout, 1)
+        os.close(saved_stdout)
+    return selected[0], changed[0], insert_only[0]
+
+
+def save_history_file(path: Path, commands: list[str]) -> None:
+    """Persist a changed newest-first history list in zsh-readable form."""
+    temporary = path.with_name(f".{path.name}.hstr.tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        for command in reversed(commands):
+            timestamp = getattr(command, "timestamp", "")
+            if timestamp:
+                epoch = int(datetime.strptime(timestamp, "%Y-%m-%d %H:%M").timestamp())
+                stream.write(f": {epoch}:0;{command}\n")
+            else:
+                stream.write(f"{command}\n")
+    temporary.replace(path)
+
+
+def zsh_binding(tool: str = "hstr", key: str = "^R") -> str:
+    bind_key = shlex.quote(key)
+    return f'''# hstr: Ctrl-R interactive shell history search
+function hstr-widget() {{
+  local hstr_result hstr_file
+  hstr_file="${{HISTFILE:-$HOME/.zsh_history}}"
+  fc -W "$hstr_file"
+  hstr_result="$({tool} --history-file "$hstr_file" --print < /dev/tty)"
+  hstr_action=$?
+  fc -p "$hstr_file"
+  HISTFILE="$hstr_file"
+  if [[ -n "$hstr_result" ]]; then
+    BUFFER="$hstr_result"
+    CURSOR=${{#BUFFER}}
+    if (( hstr_action == 10 )); then
+      zle redisplay
+    else
+      zle accept-line
+    fi
+  fi
+}}
+zle -N hstr-widget
+bindkey {bind_key} hstr-widget
+
+function hstr-run() {{
+  local hstr_result hstr_file
+  hstr_file="${{HISTFILE:-$HOME/.zsh_history}}"
+  fc -W "$hstr_file"
+  hstr_result="$({tool} --history-file "$hstr_file" --print < /dev/tty)"
+  hstr_action=$?
+  fc -p "$hstr_file"
+  HISTFILE="$hstr_file"
+  if [[ -n "$hstr_result" ]]; then
+    if (( hstr_action == 10 )); then
+      print -z -- "$hstr_result"
+    else
+      print -s -- "$hstr_result"
+      print -- "$hstr_result"
+      eval "$hstr_result"
+    fi
+  fi
+}}
+'''
+
+
+def _remove_hstr_integration(existing: str) -> str:
+    managed = re.compile(
+        r"(?ms)^# hstr shell integration \(managed by hstr\)$.*?^# end hstr shell integration\n?"
+    )
+    existing = managed.sub("", existing)
+    # Remove the legacy block created by earlier versions of hstr --install.
+    existing = re.sub(r"(?m)^# Enable hstr interactive history search on Ctrl-[RE]\.?\n?", "", existing)
+    existing = re.sub(r'(?m)^eval "\$\([^\n]*hstr --bind-zsh\)"\n?', "", existing)
+    return existing
+
+
+def install_hstr(key: str) -> int:
+    source_dir = Path(sys.argv[0]).resolve().parent
+    zshrc = Path(os.environ.get("ZDOTDIR", str(Path.home()))) / ".zshrc"
+
+    start = "# hstr shell integration (managed by hstr)"
+    end = "# end hstr shell integration"
+    block = (
+        f'{start}\n'
+        f'export PATH="{source_dir}:$PATH"\n'
+        f'eval "$(hstr --bind-zsh --key {shlex.quote(key)})"\n'
+        f'{end}'
+    )
+    print("hstr will:")
+    print(f"  add this block to {zshrc}:")
+    print("    ---")
+    for line in block.splitlines():
+        print(f"    {line}")
+    print("    ---")
+    try:
+        answer = input("Proceed with installation? [Y/n] ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nInstallation cancelled.")
+        return 1
+    if answer and answer.lower() != "y":
+        print("Installation cancelled.")
+        return 0
+    existing = zshrc.read_text(encoding="utf-8") if zshrc.exists() else ""
+    existing = _remove_hstr_integration(existing)
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    updated = existing + separator + "\n" + block + "\n"
+    zshrc.write_text(updated, encoding="utf-8")
+    print(f"Enabled hstr from {source_dir} in {zshrc}")
+    print("Reload the current shell with: source ~/.zshrc")
+    return 0
+
+
+def uninstall_hstr() -> int:
+    zshrc = Path(os.environ.get("ZDOTDIR", str(Path.home()))) / ".zshrc"
+    existing = zshrc.read_text(encoding="utf-8") if zshrc.exists() else ""
+    updated = _remove_hstr_integration(existing)
+    if updated == existing:
+        print(f"No hstr shell integration found in {zshrc}")
+        return 0
+
+    managed_match = re.search(
+        r"(?ms)^# hstr shell integration \(managed by hstr\)$.*?^# end hstr shell integration\n?",
+        existing,
+    )
+    if managed_match:
+        removed = managed_match.group(0).rstrip("\n").splitlines()
+    else:
+        removed = [line for line in existing.splitlines() if "hstr" in line.lower()]
+    print("hstr will remove these lines from the zsh configuration:")
+    print("  ---")
+    for line in removed:
+        print(f"  {line}")
+    print("  ---")
+    try:
+        answer = input("Proceed with uninstall? [Y/n] ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nUninstallation cancelled.")
+        return 1
+    if answer and answer.lower() != "y":
+        print("Uninstallation cancelled.")
+        return 0
+
+    zshrc.write_text(updated, encoding="utf-8")
+    print(f"Removed hstr shell integration from {zshrc}")
+    print("No hstr files were deleted")
+    print("Reload the current shell with: source ~/.zshrc")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Search and run shell history",
+        epilog="Example:\n  ./hstr --install --key '^T'",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--history-file", type=Path, help="history file to search")
+    parser.add_argument("--bind-zsh", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--install", action="store_true", help="enable hstr from its current directory in ~/.zshrc")
+    parser.add_argument("--uninstall", action="store_true", help="remove hstr shell integration from ~/.zshrc")
+    parser.add_argument("--key", default="^R", help="zsh key sequence for the history widget (default: ^R)")
+    parser.add_argument("--print", dest="print_only", action="store_true", help="print the selection instead of executing it")
+    args = parser.parse_args()
+
+    if args.install:
+        return install_hstr(args.key)
+    if args.uninstall:
+        return uninstall_hstr()
+    if args.bind_zsh:
+        tool = shlex.quote(str(Path(sys.argv[0]).resolve()))
+        print(zsh_binding(tool, args.key), end="")
+        return 0
+
+    history_path = args.history_file or Path(os.environ.get("HISTFILE", str(Path.home() / ".zsh_history")))
+    if args.history_file:
+        commands = history_from_file(args.history_file)
+    else:
+        commands = history_from_file(history_path)
+        if not commands and not sys.stdin.isatty():
+            commands = parse_history(sys.stdin)
+
+    selected, history_changed, insert_only = choose(commands)
+    if history_changed and (args.history_file or history_path.exists()):
+        save_history_file(history_path, commands)
+    if selected is not None and insert_only:
+        sys.stdout.write(command_for_execution(selected))
+        return 10
+    if selected is not None:
+        if args.print_only:
+            sys.stdout.write(command_for_execution(selected))
+        else:
+            executable = command_for_execution(selected)
+            sys.stdout.write(executable + "\n")
+            sys.stdout.flush()
+            return subprocess.run(["/bin/zsh", "-c", executable], check=False).returncode
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
