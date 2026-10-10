@@ -28,32 +28,41 @@ The `hstr-run` helper adds the selected command to the current zsh history
 before executing it. Running `./hstr` directly still works, but a standalone
 child process cannot update the parent shell's in-memory history.
 
-## Optional shell integration
+## Install
 
-Enable hstr from its current directory and add the Ctrl-R widget to `~/.zshrc` with:
+Clone the repository and run the installer:
 
 ```sh
+git clone https://github.com/simon-verzijl/hstr.git
+cd hstr
 ./hstr --install
 ```
 
-Use another zsh key sequence with `--key`, for example:
+The installer shows the exact `.zshrc` block it will add and asks for
+confirmation. It leaves the executable in the repository and adds that
+directory to `PATH`; it does not copy or move files. Reload the current shell
+after installation:
+
+```sh
+source ~/.zshrc
+```
+
+By default, hstr is bound to Ctrl-R. To use another zsh key sequence, pass
+`--key` during installation:
 
 ```sh
 ./hstr --install --key '^T'
 ```
 
-Remove the shell integration without deleting hstr files with:
+To remove the hstr shell integration from `~/.zshrc`, without deleting the
+repository or executable, run:
 
 ```sh
 ./hstr --uninstall
 ```
 
-```sh
-./install.sh
-```
-
-Restart zsh (or run `source ~/.zshrc`). The installer places `hstr` in
-`~/.local/bin` and adds the Ctrl-R widget to your zsh configuration.
+The uninstaller also previews the exact lines it will remove and asks for
+confirmation. Reload the shell afterward with `source ~/.zshrc`.
 
 Search terms are combined with AND semantics and matched case-insensitively.
 Prefix a term with `^` to match it only at the beginning of the command.
