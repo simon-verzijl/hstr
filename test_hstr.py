@@ -16,11 +16,7 @@ command_for_execution = hstr_module.command_for_execution
 
 class HistoryTests(unittest.TestCase):
     def test_zsh_history_is_newest_first_and_multiline(self):
-        lines = [
-            ": 1:0;git status\n",
-            ": 2:0;docker compose up\n",
-            "docker compose logs\n",
-        ]
+        lines = [": 1:0;git status\n", ": 2:0;docker compose up\n", "docker compose logs\n"]
         self.assertEqual(parse_history(lines), ["git status", "docker compose up\ndocker compose logs"])
         self.assertEqual(parse_history([": 1700000000:0;git status\n"])[0].timestamp, "2023-11-14 23:13")
 
@@ -29,13 +25,8 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(parse_history(lines), ["ls -l ;\\\\\necho hoihoi;\\\\\nls -l"])
 
     def test_zsh_encoded_newlines_split_entries_and_restore_multiline_commands(self):
-        lines = [
-            r": 1:0;gcloud alpha sql instances patch \n  --project=qbuzz-accept \n  --storage-auto-increase-limit=2000\n: 2:0;echo next" + "\n",
-        ]
-        self.assertEqual(
-            parse_history(lines),
-            ["gcloud alpha sql instances patch \\\n  --project=qbuzz-accept \\\n  --storage-auto-increase-limit=2000", "echo next"],
-        )
+        lines = [r": 1:0;gcloud alpha sql instances patch \n  --project=qbuzz-accept \n  --storage-auto-increase-limit=2000\n: 2:0;echo next" + "\n"]
+        self.assertEqual(parse_history(lines), ["gcloud alpha sql instances patch \\\n  --project=qbuzz-accept \\\n  --storage-auto-increase-limit=2000", "echo next"])
 
     def test_numbered_fc_history(self):
         self.assertEqual(parse_history(["  12  git status\n", "  11  git log\n"]), ["git status", "git log"])
@@ -53,8 +44,7 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(matching(commands, "git commit"), ["git commit -am fix", "GIT COMMIT --amend"])
 
     def test_caret_anchors_a_term_to_the_beginning(self):
-        commands = ["git status", "echo git status", "GIT commit"]
-        self.assertEqual(matching(commands, "^git"), ["git status", "GIT commit"])
+        self.assertEqual(matching(["git status", "echo git status", "GIT commit"], "^git"), ["git status", "GIT commit"])
 
     def test_multiline_commands_remain_searchable_as_one_entry(self):
         command = "for file in *.txt; do\n  echo $file\ndone"
@@ -65,23 +55,12 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(display_command(command), "ls -l ; ↵ echo hoihoi; ↵ ls -l")
 
     def test_execution_normalizes_zsh_multiline_history_escaping(self):
-        command = (
-            "PROJECT=qbuzz-devops\\\\\n"
-            "\\\\\n"
-            "gcloud compute snapshots list \\\\\n"
-            "  --project \"$PROJECT\" \\\\\n"
-            "  --limit=20"
-        )
-        expected = (
-            "PROJECT=qbuzz-devops\n"
-            "gcloud compute snapshots list \\\n"
-            "  --project \"$PROJECT\" \\\n"
-            "  --limit=20"
-        )
+        command = "PROJECT=qbuzz-devops\\\\\n\\\\\ngcloud compute snapshots list \\\\\n  --project \"$PROJECT\" \\\\\n  --limit=20"
+        expected = "PROJECT=qbuzz-devops\ngcloud compute snapshots list \\\n  --project \"$PROJECT\" \\\n  --limit=20"
         self.assertEqual(command_for_execution(command), expected)
 
     def test_assignment_continuation_becomes_command_boundary(self):
-        command = "PROJECT=qbuzz-devops\\\\\ngcloud compute snapshots list \\\\\n  --project \"$PROJECT\""
+        command = "PROJECT=qbuzz-devops\\\\\ngcloud compute snapshots list \\\n  --project \"$PROJECT\""
         expected = "PROJECT=qbuzz-devops\ngcloud compute snapshots list \\\n  --project \"$PROJECT\""
         self.assertEqual(command_for_execution(command), expected)
 
