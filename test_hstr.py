@@ -46,6 +46,10 @@ class HistoryTests(unittest.TestCase):
     def test_caret_anchors_a_term_to_the_beginning(self):
         self.assertEqual(matching(["git status", "echo git status", "GIT commit"], "^git"), ["git status", "GIT commit"])
 
+    def test_prefix_matches_are_ranked_before_mentions(self):
+        commands = ["echo nc status", "nc -zv host 443", "nc", "watch nc -zv host 443"]
+        self.assertEqual(matching(commands, "nc")[:3], ["nc", "nc -zv host 443", "echo nc status"])
+
     def test_multiline_commands_remain_searchable_as_one_entry(self):
         command = "for file in *.txt; do\n  echo $file\ndone"
         self.assertEqual(matching([command, "echo done"], "echo file"), [command])

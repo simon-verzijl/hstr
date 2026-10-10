@@ -89,9 +89,10 @@ def history_from_file(path: Path) -> list[str]:
 
 def matching(commands: Iterable[str], query: str) -> list[str]:
     terms = [term.casefold() for term in query.split()]
-    result: list[str] = []
+    query_text = query.strip().casefold().lstrip("^")
+    ranked: list[tuple[int, int, HistoryCommand]] = []
     seen: set[str] = set()
-    for command in commands:
+    for position, command in enumerate(commands):
         normalized = HistoryCommand(command.strip(), getattr(command, "timestamp", ""))
         if not normalized or normalized in seen:
             continue
@@ -100,9 +101,18 @@ def matching(commands: Iterable[str], query: str) -> list[str]:
             (haystack.startswith(term[1:]) if term.startswith("^") else term in haystack)
             for term in terms
         ):
-            result.append(normalized)
+            if haystack == query_text:
+                score = 0
+            elif query_text and haystack.startswith(query_text):
+                score = 1
+            elif terms and haystack.split(maxsplit=1)[0] == terms[0].lstrip("^"):
+                score = 2
+            else:
+                score = 3
+            ranked.append((score, position, normalized))
             seen.add(normalized)
-    return result
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [command for _, _, command in ranked]
 
 
 def display_command(command: str) -> str:
