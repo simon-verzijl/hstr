@@ -50,6 +50,9 @@ class HistoryTests(unittest.TestCase):
         commands = ["echo nc status", "nc -zv host 443", "nc", "watch nc -zv host 443"]
         self.assertEqual(matching(commands, "nc")[:3], ["nc", "nc -zv host 443", "echo nc status"])
 
+    def test_duplicate_commands_are_shown_once(self):
+        self.assertEqual(matching(["nc -zv host 443", "nc  -zv host 443", "echo nc"], "nc"), ["nc -zv host 443", "echo nc"])
+
     def test_multiline_commands_remain_searchable_as_one_entry(self):
         command = "for file in *.txt; do\n  echo $file\ndone"
         self.assertEqual(matching([command, "echo done"], "echo file"), [command])

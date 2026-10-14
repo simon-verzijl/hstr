@@ -94,7 +94,8 @@ def matching(commands: Iterable[str], query: str) -> list[str]:
     seen: set[str] = set()
     for position, command in enumerate(commands):
         normalized = HistoryCommand(command.strip(), getattr(command, "timestamp", ""))
-        if not normalized or normalized in seen:
+        duplicate_key = re.sub(r"[ \t]+", " ", normalized).strip()
+        if not normalized or duplicate_key in seen:
             continue
         haystack = normalized.casefold()
         if all(
@@ -110,7 +111,7 @@ def matching(commands: Iterable[str], query: str) -> list[str]:
             else:
                 score = 3
             ranked.append((score, position, normalized))
-            seen.add(normalized)
+            seen.add(duplicate_key)
     ranked.sort(key=lambda item: (item[0], item[1]))
     return [command for _, _, command in ranked]
 
