@@ -168,18 +168,20 @@ def draw(screen: "curses._CursesWindow", query: str, commands: list[str], index:
         hint = "  ↑/↓ add  Enter/Y delete  Esc cancel"
     else:
         footer = f"Search: {query}"
-        hint = "  ↑/↓ select  → insert  Enter run  Esc quit"
+        hint = "  ↑/↓ select  → to prompt  Enter run  Esc quit"
     try:
         search_attr = (curses.color_pair(5) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
         hint_attr = (curses.color_pair(6) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
         count_attr = (curses.color_pair(7) | curses.A_BOLD) if curses.has_colors() else curses.A_DIM
-        screen.addnstr(
-            height - 2,
-            0,
-            footer[: max(1, width - 1)],
-            max(1, width - 1),
-            search_attr,
-        )
+        if delete_targets is None:
+            search_label = "Search: "
+            search_value = query
+            screen.addnstr(height - 2, 0, search_label[: max(1, width - 1)], max(1, width - 1), curses.color_pair(3) | curses.A_BOLD)
+            value_start = min(len(search_label), max(0, width - 1))
+            if value_start < width - 1:
+                screen.addnstr(height - 2, value_start, search_value[: width - 1 - value_start], width - 1 - value_start, search_attr)
+        else:
+            screen.addnstr(height - 2, 0, footer[: max(1, width - 1)], max(1, width - 1), search_attr)
         hint_start = min(len(footer), max(0, width - 1))
         if hint_start < width - 1:
             screen.addnstr(height - 2, hint_start, hint[: width - 1 - hint_start], width - 1 - hint_start, hint_attr)
