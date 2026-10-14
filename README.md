@@ -51,6 +51,7 @@ match it at the beginning of the command.
 - Up/Down: navigate results.
 - Page Up/Page Down: navigate by screen.
 - Home/End or Ctrl-A/Ctrl-E: jump to the first/last result.
+- Ctrl-D: show or hide timestamps.
 - Delete: select history entries for deletion; press Enter or `Y` to confirm.
 - Escape or Ctrl-C: exit.
 

@@ -142,14 +142,14 @@ def command_for_execution(command: str) -> str:
     return command
 
 
-def draw(screen: "curses._CursesWindow", query: str, commands: list[str], index: int, start: int, delete_targets: set[str] | None = None) -> None:
+def draw(screen: "curses._CursesWindow", query: str, commands: list[str], index: int, start: int, delete_targets: set[str] | None = None, show_dates: bool = True) -> None:
     screen.erase()
     height, width = screen.getmaxyx()
     usable = max(1, height - 3)
     start = max(0, min(start, max(0, len(commands) - usable)))
 
     for row, command in enumerate(commands[start : start + usable]):
-        timestamp = getattr(command, "timestamp", "")
+        timestamp = getattr(command, "timestamp", "") if show_dates else ""
         display = f"{timestamp}  {display_command(command)}" if timestamp else display_command(command)
         if len(display) > width - 2:
             display = display[: max(0, width - 5)] + "..."
@@ -169,7 +169,7 @@ def draw(screen: "curses._CursesWindow", query: str, commands: list[str], index:
         hint = "  ↑/↓ add  Enter/Y delete  Esc cancel"
     else:
         footer = f"Search: {query}"
-        hint = "  ↑/↓ select  → to prompt  Enter run  Esc quit"
+        hint = "  ↑/↓ select  → to prompt  Enter run  Esc quit  Ctrl-D dates"
     try:
         search_attr = (curses.color_pair(5) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
         hint_attr = (curses.color_pair(6) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
@@ -239,6 +239,7 @@ def choose(commands: list[str]) -> tuple[str | None, bool, bool]:
         delete_mode = False
         delete_direction: str | None = None
         delete_start = 0
+        show_dates = True
         while True:
             results = matching(commands, query)
             if results:
@@ -246,7 +247,7 @@ def choose(commands: list[str]) -> tuple[str | None, bool, bool]:
             else:
                 index = 0
             view_start = max(0, min(view_start, max(0, len(results) - max(1, screen.getmaxyx()[0] - 3))))
-            draw(screen, query, results, index, view_start, delete_targets if delete_mode else None)
+            draw(screen, query, results, index, view_start, delete_targets if delete_mode else None, show_dates)
             try:
                 key = screen.get_wch()
             except KeyboardInterrupt:
@@ -323,6 +324,9 @@ def choose(commands: list[str]) -> tuple[str | None, bool, bool]:
                     selected[0] = results[index]
                     insert_only[0] = True
                 return
+            if key == "\x04":
+                show_dates = not show_dates
+                continue
             if key in (27, "\x1b", "\x03") or key == getattr(curses, "KEY_EXIT", -999):
                 return
             if key in (curses.KEY_HOME, "\x01"):
