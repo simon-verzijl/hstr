@@ -136,9 +136,14 @@ def command_for_execution(command: str) -> str:
         r"\1\n",
         command,
     )
+    # History entries can also escape the newline between separate commands.
+    # Keep indented argument continuations intact, but split before a new
+    # command that starts at column zero.
     command = re.sub(r"\\+\n\\+\n", "\n", command)
+    command = re.sub(r"\\+\n(?=\S)", "\n", command)
     # Continuation lines need exactly one backslash before their newline.
     command = re.sub(r"\\+\n", lambda _: slash + "\n", command)
+    command = re.sub(r"\\+$", "", command)
     return command
 
 

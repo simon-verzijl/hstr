@@ -71,6 +71,11 @@ class HistoryTests(unittest.TestCase):
         expected = "PROJECT=qbuzz-devops\ngcloud compute snapshots list \\\n  --project \"$PROJECT\""
         self.assertEqual(command_for_execution(command), expected)
 
+    def test_unindented_multiline_commands_are_not_joined(self):
+        command = "cd idb.infra/terraform/setup\\\\\nterraform init\\\\\nterraform apply -var-file=project.tfvars\\\\"
+        expected = "cd idb.infra/terraform/setup\nterraform init\nterraform apply -var-file=project.tfvars"
+        self.assertEqual(command_for_execution(command), expected)
+
 
 if __name__ == "__main__":
     unittest.main()
